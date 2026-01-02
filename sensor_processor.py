@@ -5,7 +5,7 @@ class SensorProcessor:
         self.temp_limit = temp_limit
 
     def analyze_data(self, data):
-        """센서 데이터를 분석하여 경고 여부를 반환합니다."""
+        """ 센서 데이터를 분석하여 경고 여부를 반환합니다."""
         if data.temperature > self.temp_limit:
             return "WARNING: High Temperature Detected"
         if data.pressure < 0:
