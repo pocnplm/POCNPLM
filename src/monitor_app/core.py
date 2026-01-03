@@ -11,16 +11,16 @@ class SystemMonitor:
         self.os_info = platform.system()
 
     def scan_resources(self):
-        log.info(f"시스템 스캔 시작 (Target Environment: {self.env})...")
-        time.sleep(1) # 작업하는 척 딜레이
+        log.info(f"Starting system scan (Target Environment: {self.env})...")
+        time.sleep(1) 
         
         # 복잡한 계산을 하는 척 시뮬레이션
         cpu_usage = random.randint(10, 85)
         memory_usage = random.randint(2048, 8192)
         
-        log.info(f"OS 감지됨: {self.os_info}")
-        log.info(f"CPU 사용량 분석 완료: {cpu_usage}%")
-        log.debug(f"메모리 덤프 분석 중... 할당량: {memory_usage}MB")
+        log.info(f"OS Detected: {self.os_info}")
+        log.info(f"CPU Analysis Complete: {cpu_usage}%")
+        log.debug(f"Analyzing memory dump... Allocated: {memory_usage}MB")
         
         return {
             "os": self.os_info,
