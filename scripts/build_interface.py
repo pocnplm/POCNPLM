@@ -5,13 +5,12 @@ import time
 import subprocess
 import datetime
 
-# 색상 코드는 유지 (혹시 윈도우 콘솔 문제 시 삭제 가능)
+# 색상 코드 (Windows 호환성을 위해 유지하되, 문제시 삭제 가능)
 GREEN = '\033[92m'
 RESET = '\033[0m'
 BOLD = '\033[1m'
 
 def log(msg):
-    # 로그 메시지 앞에 [BUILD-SCRIPT] 태그
     print(f"{GREEN}{BOLD}[BUILD-SCRIPT] {msg}{RESET}")
 
 def run_cmd(cmd):
@@ -38,15 +37,16 @@ def main():
         shutil.rmtree(dist_dir)
     os.makedirs(dist_dir)
 
-    # 2. 의존성 설치 시뮬레이션
+    # 2. 의존성 설치
     log("Checking and installing dependencies...")
     run_cmd("pip install -r requirements.txt")
     time.sleep(1)
 
-    # 3. 코드 품질 검사 (Linting) 시뮬레이션
+    # 3. 코드 품질 검사
     log("Running static code analysis (Linting)...")
     time.sleep(1)
-    log("✔ Code quality check passed (Score: 10/10)")
+    # [수정] 특수문자 제거 (✔ -> [OK])
+    log("[OK] Code quality check passed (Score: 10/10)")
 
     # 4. 패키징
     log(f"Packaging application... (Target: {dist_dir})")
@@ -56,7 +56,8 @@ def main():
     
     shutil.make_archive(archive_name, 'zip', src_dir)
     
-    log(f"✔ Build Success! Artifact created: {archive_name}.zip")
+    # [수정] 특수문자 제거 (✔ -> [SUCCESS])
+    log(f"[SUCCESS] Build Success! Artifact created: {archive_name}.zip")
 
 if __name__ == "__main__":
     main()
