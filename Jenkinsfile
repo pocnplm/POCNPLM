@@ -56,6 +56,15 @@ pipeline {
                 }
             }
         }
+        stage('Update Test Records') {
+            steps {
+                script {
+                    echo ">>> [Stage 3] Updating Test Records (Pass/Fail)..."
+                    // 파이썬 스크립트 실행 (key.text 자동 인식)
+                    bat 'python scripts/update_test_records.py'
+                }
+            }
+        }
     }
 
     post {
