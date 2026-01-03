@@ -60,9 +60,12 @@ def main():
         "Accept": "application/json"
     }
 
-    # [수정됨] ensure_ascii=True 옵션을 추가하여 한글/특수문자를 안전한 ASCII 코드로 변환 전송
+    # [수정됨] json 문자열을 .encode('utf-8')을 통해 '바이트(bytes)'로 직접 변환
+    # 이렇게 하면 requests가 내부적으로 latin-1 인코딩을 시도하지 않아 에러가 발생하지 않음
+    json_bytes = json.dumps(resource_data).encode('utf-8')
+
     files = {
-        'resource': (None, json.dumps(resource_data, ensure_ascii=True)), 
+        'resource': (None, json_bytes), 
         'files': (target_filename, open(pdf_path, 'rb'), 'application/pdf')
     }
 
