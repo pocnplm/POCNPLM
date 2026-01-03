@@ -60,9 +60,9 @@ def main():
         "Accept": "application/json"
     }
 
-    # [수정됨] resource 부분의 'application/json'을 제거함 -> 자동으로 text/plain 처리됨
+    # [수정됨] ensure_ascii=True 옵션을 추가하여 한글/특수문자를 안전한 ASCII 코드로 변환 전송
     files = {
-        'resource': (None, json.dumps(resource_data)), 
+        'resource': (None, json.dumps(resource_data, ensure_ascii=True)), 
         'files': (target_filename, open(pdf_path, 'rb'), 'application/pdf')
     }
 
