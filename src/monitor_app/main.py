@@ -1,20 +1,20 @@
 import sys
-import argparse
+import time
+# argparse 제거
 from .core import SystemMonitor
 from .utils import setup_logger
 
 log = setup_logger("MainEntry")
 
 def main():
-    # 커맨드라인 인자 파싱 (전문적인 툴 느낌)
-    parser = argparse.ArgumentParser(description="System Monitor Agent")
-    parser.add_argument("--env", type=str, default="dev", help="실행 환경 (dev/prod)")
-    args = parser.parse_args()
+    # 파라미터 없이 내부적으로 기본값 설정
+    target_env = "dev" 
 
     log.info(">>> 모니터링 에이전트 초기화 중...")
+    log.info(f"설정된 환경: {target_env} (Default)")
     
     try:
-        monitor = SystemMonitor(args.env)
+        monitor = SystemMonitor(target_env)
         result = monitor.scan_resources()
         
         log.info(f"진단 결과: {result}")

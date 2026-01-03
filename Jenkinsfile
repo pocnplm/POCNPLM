@@ -17,12 +17,9 @@ pipeline {
         stage('Build & Package') {
             steps {
                 script {
-                    // Python 스크립트에게 권한 위임
-                    // Linux/Mac
-                    sh 'python3 scripts/build_interface.py'
-                    
-                    // Windows라면 아래 주석 해제 후 위 sh 주석 처리
-                    // bat 'python scripts/build_interface.py'
+                    // [수정됨] Windows 환경에 맞춰 bat 명령어 사용
+                    echo "Windows 환경에서 Python 스크립트를 실행합니다..."
+                    bat 'python scripts/build_interface.py'
                 }
             }
         }
@@ -31,7 +28,8 @@ pipeline {
     post {
         success {
             echo "✅ 빌드가 성공했습니다. 결과물을 보관합니다."
-            // Jenkins UI에 빌드 결과물(zip)을 다운로드 버튼으로 만들어줌
+            // Windows에서는 경로 구분자가 다르지만 Jenkins가 어느 정도 처리해줍니다.
+            // 혹시 실패하면 'dist\\*.zip' 으로 변경 고려
             archiveArtifacts artifacts: 'dist/*.zip', fingerprint: true
         }
         failure {
