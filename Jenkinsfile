@@ -5,11 +5,11 @@ pipeline {
     parameters {
         // 1. POLARION_TOKEN (사진에 있는 긴 토큰 값)
         string(name: 'POLARION_TOKEN', 
-               defaultValue: 'eyJraWQiOiIyMDljOGNlNS0wYTawODNkZS0yMzhlZjBjYy04NDNHMDM5NCIsInR5cCI6IkpXVCIsImFsZyI6IlJTMjU2In0.eyJzdWIiOiJhZG1pbiIsImlzcyI6IlBvbGFyaW9uIiwiaWF0IjoxNzM1ODgzNDg4LCJleHAi:MTczNjQ4ODI4OH0.Qr... (너무 길어서 생략, 본인 토큰 사용)', 
+               defaultValue: 'eyJraWQiOiIyMDljOGNlNS0wYTAwODNkZS0yMzhlZjBjYy04NDNhMDM5NCIsInR5cCI6IkpXVCIsImFsZyI6IlJTMjU2In0.eyJzdWIiOiJhZG1pbiIsImlkIjoiODIwZmFiYjAtMGEwMDgzZGUtNjUyYTFlYjQtNzMxMzgyMTgiLCJleHAiOjE3NzUxODk2MjMsImlhdCI6MTc2NzQxMzYyM30.YfpqhCjcV3gQUXU6Cstb6YXAvB-SNmjeKT6jXtX2ZFezuLCVxIhrdGySopS9gfOilbEKV0-q7udBy2nu24GjwSxlEj5ewnNfj9_zzEuZ46r_u97yxKlKdQNTaNChZcifFCseiuODK6gwbB5Ynxv_ljgOd924rAlUH3m9W8Ye1pQjCisKAZ6kzqd66AQfWr9iCjbafmeJOBMPe9_pggx6z49b7WlRZXJgLDGB_p3U1XsKJB9sl3gj032IQimKRn6k9zpYt06vAiPj4bIZTfxBg-tN9xyZ7QrHO3-th78CrD9uhBf504IqOpzN_qXcXY1oglZ7x6higZch7tgin6Zf-Q', 
                description: 'Polarion Access Token', 
                trim: true)
         
-        // 2. projectid (사진에 빈칸으로 되어 있음 -> 빈칸 유지)
+        // 2. projectid  (사진에 빈칸으로 되어 있음 -> 빈칸 유지)
         string(name: 'projectid', defaultValue: '', description: 'Project ID (e.g., elibrary)', trim: true)
         
         // 3. testRunId (사진에 빈칸으로 되어 있음 -> 빈칸 유지)
