@@ -4,7 +4,7 @@ import json
 import requests
 import datetime
 
-# Color codes for logs
+# Color codes
 GREEN = '\033[92m'
 RESET = '\033[0m'
 BOLD = '\033[1m'
@@ -15,24 +15,21 @@ def log(msg):
 def main():
     log("Starting Polarion upload process...")
 
-    # 1. Get Parameters from Jenkins Environment Variables
-    # (Matches the parameter names in your Jenkins image)
+    # 1. Get Parameters
     token = os.getenv('POLARION_TOKEN')
-    project_id = os.getenv('projectid')       # Note: lowercase from image
-    test_run_id = os.getenv('testRunId')      # Note: camelCase from image
+    project_id = os.getenv('projectid')
+    test_run_id = os.getenv('testRunId')
     base_url = os.getenv('BASE_URL')
     pdf_path = os.getenv('PDF_PATH')
     
-    # Jenkins default variables
     job_name = os.getenv('JOB_NAME', 'UnknownJob')
     build_number = os.getenv('BUILD_NUMBER', '0')
 
-    # Validate essential inputs
     if not all([token, project_id, test_run_id, base_url, pdf_path]):
         print("[ERROR] Missing required environment variables.")
         sys.exit(1)
 
-    # 2. Check PDF File Existence
+    # 2. Check PDF
     if not os.path.exists(pdf_path):
         print(f"[ERROR] PDF file not found at: {pdf_path}")
         sys.exit(1)
@@ -40,11 +37,10 @@ def main():
     log(f"Target PDF: {pdf_path}")
 
     # 3. Construct API URL
-    # Format: BASE_URL/projects/PROJECT_ID/testruns/TESTRUN_ID/attachments
     target_url = f"{base_url}/projects/{project_id}/testruns/{test_run_id}/attachments"
     log(f"API Endpoint: {target_url}")
 
-    # 4. Prepare Metadata (JSON)
+    # 4. Prepare Metadata
     target_filename = f"Static_Analysis_{build_number}.pdf"
     title = f"Static Analysis [{job_name} #{build_number}]"
 
@@ -58,15 +54,15 @@ def main():
         }]
     }
 
-    # 5. Execute Request (Multipart Upload)
+    # 5. Execute Request
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json"
-        # 'Content-Type': 'multipart/form-data' is set automatically by requests
     }
 
+    # [수정됨] resource 부분의 'application/json'을 제거함 -> 자동으로 text/plain 처리됨
     files = {
-        'resource': (None, json.dumps(resource_data), 'application/json'),
+        'resource': (None, json.dumps(resource_data)), 
         'files': (target_filename, open(pdf_path, 'rb'), 'application/pdf')
     }
 
@@ -74,7 +70,6 @@ def main():
         log("Sending request to Polarion...")
         response = requests.post(target_url, headers=headers, files=files)
         
-        # Check Response
         if response.status_code in [200, 201]:
             log(f"[SUCCESS] Upload Complete! Status: {response.status_code}")
             print(response.text)
