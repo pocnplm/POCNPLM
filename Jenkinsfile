@@ -1,10 +1,7 @@
 pipeline {
     agent any
 
-    parameters {
-        string(name: 'BUILD_VERSION', defaultValue: '2.0.0-RC1', description: '배포할 버전 태그')
-        choice(name: 'TARGET_ENV', choices: ['dev', 'stg', 'prod'], description: '배포 대상 환경')
-    }
+
 
     stages {
         stage('Initialize') {
