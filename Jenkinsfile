@@ -26,6 +26,9 @@ pipeline {
                defaultValue: 'C:\\Siemens\\Polarion\\Static Analysis.pdf', 
                description: 'Absolute path to PDF file', 
                trim: true)
+
+        string(name: 'planType', 
+                defaultValue: '', description: 'Plan Type(e.g., Agile)', trim: true)
     }
 
     stages {
