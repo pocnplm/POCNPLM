@@ -4,10 +4,11 @@ import json
 import datetime
 import requests
 import urllib3
-import re  # 정규표현식 모듈
+import re
 
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# 윈도우 인코딩 문제 방지
 sys.stdout.reconfigure(encoding='utf-8')
 
 # 로그용 색상 코드
@@ -30,24 +31,20 @@ def debug_log(msg):
 # UI Base URL 추출 함수
 # -----------------------------------------------------------
 def get_ui_base_url(api_base_url):
-    # API 주소가 .../polarion/rest/v1 이라면 .../polarion 까지만 추출
     if "/rest" in api_base_url:
         return api_base_url.split("/rest")[0]
     return api_base_url
 
 # -----------------------------------------------------------
-# [중요] Test Case ID 추출 로직 (정규표현식 강화)
+# Test Case ID 추출 로직 (정규표현식)
 # -----------------------------------------------------------
 def get_test_case_id_from_record(record_id):
     """
-    Record ID 예: Project/TestRun/TestCaseID/ExecutionID
-    목표: 'OKS_Agile_Test'(프로젝트)나 'testest'(TestRun) 말고 'OKSA-1601' 같은 패턴을 찾는다.
+    Record ID에서 'OKSA-1234' 같은 패턴만 추출
     """
     try:
         parts = record_id.split('/')
-        
-        # 정규식 패턴: 알파벳문자들 + 하이픈(-) + 숫자들 (예: OKSA-1234)
-        # 언더바(_)가 포함된 프로젝트 ID는 이 패턴에 걸리지 않음
+        # 정규식: 문자-숫자 패턴 (예: OKSA-1703)
         id_pattern = re.compile(r'^[A-Za-z]+-\d+$')
 
         for part in parts:
@@ -72,8 +69,6 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
     }
 
     ui_base_url = get_ui_base_url(base_url)
-    
-    # [수정] ID가 정확히 추출되면 링크도 정상적으로 생성됨
     web_link_testcase = f"{ui_base_url}/#/project/{project_id}/workitem?id={test_case_id}"
     web_link_testrun = f"{ui_base_url}/#/project/{project_id}/testrun?id={test_run_id}"
 
@@ -122,45 +117,62 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
         return None
 
 # -----------------------------------------------------------
-# [NEW] 링크 생성 함수 (보내주신 API 사용)
+# [완전 수정됨] 링크 생성 함수 (CURL 명령어 기반)
 # -----------------------------------------------------------
-def link_workitems_direct(base_url, token, project_id, source_task_id, target_testcase_id, role="resolves"):
+def link_workitems(base_url, token, project_id, source_task_id, target_testcase_id, role="resolve"):
     """
-    User가 제안한 API 엔드포인트 사용:
-    PATCH /projects/{projectId}/workitems/{workItemId}/linkedworkitems/{roleId}/{targetProjectId}/{linkedWorkItemId}
+    제공해주신 CURL 명령어 구조를 그대로 구현:
+    POST /projects/{proj}/workitems/{sourceID}/linkedworkitems
+    Payload: type="linkedworkitems", attributes={role=...}, relationships={workItem={data={id=TargetFullID}}}
     """
     
-    # ID에서 Short ID 추출 (Project명 제거)
-    # 예: "MyProject/TASK-100" -> "TASK-100"
+    # 1. Source ID: Short ID 사용 (URL용) - 예: "TASK-100"
     if "/" in source_task_id:
         source_short_id = source_task_id.split("/")[-1]
     else:
         source_short_id = source_task_id
 
-    if "/" in target_testcase_id:
-        target_short_id = target_testcase_id.split("/")[-1]
+    # 2. Target ID: Full ID 사용 (Body용) - 예: "Project/OKSA-1234"
+    if "/" not in target_testcase_id:
+        target_full_id = f"{project_id}/{target_testcase_id}"
     else:
-        target_short_id = target_testcase_id
+        target_full_id = target_testcase_id
 
-    # [중요] 제안해주신 URL 구조대로 생성
-    # base_url 끝에 /rest/v1 등이 있다면 적절히 조절 필요. 보통 API Base URL 바로 뒤에 붙음.
-    link_url = (
-        f"{base_url}/projects/{project_id}/workitems/{source_short_id}"
-        f"/linkedworkitems/{role}/{project_id}/{target_short_id}"
-    )
+    # 3. URL 구성
+    link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}/linkedworkitems"
     
     headers = {
         "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
         "Accept": "application/json"
-        # PATCH지만 Body가 없으므로 Content-Type은 생략 가능하거나 기본값
+    }
+
+    # 4. Payload 구성 (CURL 명령어 구조 준수)
+    payload = {
+        "data": [
+            {
+                "type": "linkedworkitems",
+                "attributes": {
+                    "role": role,         # 변수 사용 (기본값: resolve)
+                    "suspect": False
+                },
+                "relationships": {
+                    "workItem": {         # 연결할 대상 (Target)
+                        "data": {
+                            "type": "workitems",
+                            "id": target_full_id   # Project/ID 형식
+                        }
+                    }
+                }
+            }
+        ]
     }
 
     try:
-        debug_log(f"Linking via Direct API: {source_short_id} --[{role}]--> {target_short_id}")
-        debug_log(f"URL: {link_url}")
+        debug_log(f"Linking: {source_short_id} --[{role}]--> {target_full_id}")
         
-        # Body 없이 호출
-        response = requests.patch(link_url, headers=headers, verify=False)
+        # POST 요청 전송
+        response = requests.post(link_url, headers=headers, json=payload, verify=False)
         
         if response.status_code in [200, 201, 204]:
             log(f"[OK] Link Created Successfully!")
@@ -198,6 +210,7 @@ def main():
     api_url = f"{base_url}/projects/{project_id}/testruns/{test_run_id}/testrecords"
     
     try:
+        # 1. 기존 Test Record 조회
         response_get = requests.get(api_url, headers=headers, verify=False)
         if response_get.status_code != 200:
             error_log(f"Fetch failed: {response_get.status_code}")
@@ -222,21 +235,22 @@ def main():
                 result_status = "failed"
                 comment_text = f"Test Failed (See created Task) - Build #{build_number}"
                 
-                # 1. [강화된 로직] 정확한 Test Case ID 추출
+                # Test Case ID 추출
                 test_case_id = get_test_case_id_from_record(item['id'])
                 
                 if not test_case_id:
                     test_case_id = "UNKNOWN"
                     debug_log(f"WARNING: Could not identify Test Case ID pattern in: {item['id']}")
 
-                # 2. Task 생성
+                # Task Work Item 생성
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
                 if new_task_id and test_case_id != "UNKNOWN":
-                    # 3. [NEW] 사용자 제안 API로 링크 연결
-                    link_workitems_direct(base_url, token, project_id, new_task_id, test_case_id, role="resolve")
+                    # [핵심 변경] CURL 명령어로 확인된 API를 사용하여 링크 생성
+                    # role="resolve" (CURL 명령어 기준)
+                    link_workitems(base_url, token, project_id, new_task_id, test_case_id, role="resolve")
 
-                    # 4. Test Record 업데이트용 Defect 필드
+                    # Test Record에도 Defect 연결 정보 추가
                     defect_relationship = {
                         "defect": {
                             "data": {
