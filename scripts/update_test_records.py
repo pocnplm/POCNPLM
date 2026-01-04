@@ -16,7 +16,7 @@ RESET = '\033[0m'
 BOLD = '\033[1m'
 RED = '\033[91m'
 YELLOW = '\033[93m'
-CYAN = '\033[96m' # 디버깅용 색상 추가
+CYAN = '\033[96m'
 
 def log(msg):
     print(f"{GREEN}{BOLD}[UPDATE-RECORDS] {msg}{RESET}")
@@ -28,7 +28,6 @@ def debug_log(msg):
     print(f"{YELLOW}[DEBUG] {msg}{RESET}")
 
 def trace_log(msg):
-    """실행 흐름 추적용 로그"""
     print(f"{CYAN}[TRACE] {msg}{RESET}")
 
 # -----------------------------------------------------------
@@ -40,15 +39,28 @@ def get_ui_base_url(api_base_url):
     return api_base_url
 
 # -----------------------------------------------------------
-# Test Case ID 추출 로직
+# [FIXED] Test Case ID 추출 로직 (숫자/언더바 포함 허용)
 # -----------------------------------------------------------
 def get_test_case_id_from_record(record_id):
+    """
+    Record ID에서 WorkItem ID 패턴을 추출합니다.
+    수정됨: 'TA19-1690' 처럼 앞부분에 숫자가 포함된 경우도 인식하도록 개선
+    """
     try:
         parts = record_id.split('/')
-        id_pattern = re.compile(r'^[A-Za-z]+-\d+$')
+        
+        # [수정된 정규식]
+        # ^ : 시작
+        # [A-Za-z0-9_]+ : 알파벳, 숫자, 언더바(_)가 1개 이상 있음 (예: TA19, OKS_Agile)
+        # - : 하이픈
+        # \d+ : 숫자 (예: 1690)
+        # $ : 끝
+        id_pattern = re.compile(r'^[A-Za-z0-9_]+-\d+$')
+
         for part in parts:
             if id_pattern.match(part):
                 return part
+        
         debug_log(f"Cannot find pattern 'ID-Number' in {parts}")
     except Exception as e:
         debug_log(f"Error parsing ID: {e}")
@@ -170,25 +182,21 @@ def link_workitems(base_url, token, project_id, source_task_id, target_testcase_
         error_log(f"Error linking items: {e}")
 
 # -----------------------------------------------------------
-# Main Logic (Debug Enhanced)
+# Main Logic
 # -----------------------------------------------------------
 def main():
     log("Starting Test Records Update...")
 
-    # 환경변수 로드
     token = os.getenv('POLARION_TOKEN', '').strip()
     project_id = os.getenv('projectid', '').strip()
     test_run_id = os.getenv('testRunId', '').strip()
     base_url = os.getenv('BASE_URL', '').strip()
     
-    # -----------------------------------------------------------
-    # [DEBUG POINT 1] Plan Type 변수 검증
-    # -----------------------------------------------------------
-    raw_plan_type = os.getenv('planType') # strip() 하지 않은 원본 값
+    # 환경변수 처리
+    raw_plan_type = os.getenv('planType')
     plan_type = str(raw_plan_type).strip() if raw_plan_type else ""
     
-    trace_log(f"Environment Variable 'planType' Raw Value: '{raw_plan_type}'")
-    trace_log(f"Processed 'planType' Value: '{plan_type}'")
+    trace_log(f"Environment Variable 'planType': '{plan_type}'")
 
     build_number = os.getenv('BUILD_NUMBER', '0')
 
@@ -218,31 +226,23 @@ def main():
         current_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         clean_data = []
 
-        # -----------------------------------------------------------
-        # [DEBUG POINT 2] Agile 모드 판단 로직 검증
-        # -----------------------------------------------------------
-        # 대소문자 무시 비교 (.lower())를 추가하여 실수 방지 권장
-        # 하지만 일단 사용자가 설정한 값과 정확히 비교되는지 확인
+        # Agile 모드 확인
         is_agile_mode = (plan_type == "Agile")
         
-        trace_log(f"Check Condition: '{plan_type}' == 'Agile' ? -> {is_agile_mode}")
-        
         if is_agile_mode:
-            log(">>> Running in AGILE Mode (Fail Injection Active)")
+            log(">>> Running in AGILE Mode")
         else:
-            log(">>> Running in STANDARD Mode (All Passed)")
+            log(">>> Running in STANDARD Mode")
 
         failed_assigned = False 
 
         for index, item in enumerate(records_data):
-            # 루프 내 상태 추적
             debug_log(f"[{index+1}/{len(records_data)}] Processing Record: {item['id']}")
 
             result_status = "passed"
             comment_text = f"Test Passed from Jenkins (#{build_number})"
             defect_relationship = None 
 
-            # Agile 모드이고 아직 Failed를 할당하지 않았으면
             if is_agile_mode and not failed_assigned:
                 trace_log("   -> [Agile Logic Triggered] Marking this test as FAILED.")
                 
@@ -269,11 +269,6 @@ def main():
                     }
 
                 failed_assigned = True
-            else:
-                if is_agile_mode:
-                    trace_log("   -> [Agile Logic Skipped] Already assigned failure or subsequent item.")
-                else:
-                    trace_log("   -> [Standard Logic] Marking as PASSED.")
 
             record = {
                 "type": "testrecords",
