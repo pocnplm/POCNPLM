@@ -4,7 +4,7 @@ import json
 import datetime
 import requests
 import urllib3
-import re
+import re  # 정규표현식 모듈
 
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -30,30 +30,31 @@ def debug_log(msg):
 # UI Base URL 추출 함수
 # -----------------------------------------------------------
 def get_ui_base_url(api_base_url):
+    # API 주소가 .../polarion/rest/v1 이라면 .../polarion 까지만 추출
     if "/rest" in api_base_url:
         return api_base_url.split("/rest")[0]
     return api_base_url
 
 # -----------------------------------------------------------
-# Test Case ID 추출 로직 (정규표현식)
+# [중요] Test Case ID 추출 로직 (정규표현식 강화)
 # -----------------------------------------------------------
-def get_test_case_id_from_record(record_id, project_id, test_run_id):
+def get_test_case_id_from_record(record_id):
+    """
+    Record ID 예: Project/TestRun/TestCaseID/ExecutionID
+    목표: 'OKS_Agile_Test'(프로젝트)나 'testest'(TestRun) 말고 'OKSA-1601' 같은 패턴을 찾는다.
+    """
     try:
         parts = record_id.split('/')
-        # 프로젝트ID와 TestRunID를 제외하고 검색
-        filtered_parts = [p for p in parts if p != project_id and p != test_run_id]
-
-        # 정규식: 문자-숫자 패턴 (예: OKSA-1703)
+        
+        # 정규식 패턴: 알파벳문자들 + 하이픈(-) + 숫자들 (예: OKSA-1234)
+        # 언더바(_)가 포함된 프로젝트 ID는 이 패턴에 걸리지 않음
         id_pattern = re.compile(r'^[A-Za-z]+-\d+$')
 
-        for part in filtered_parts:
+        for part in parts:
             if id_pattern.match(part):
                 return part
         
-        # 패턴 매칭 실패 시 fallback
-        for part in filtered_parts:
-            if not part.isdigit() and not part.startswith('Link'):
-                return part
+        debug_log(f"Cannot find pattern 'ID-Number' in {parts}")
     except Exception as e:
         debug_log(f"Error parsing ID: {e}")
     return None
@@ -71,6 +72,8 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
     }
 
     ui_base_url = get_ui_base_url(base_url)
+    
+    # [수정] ID가 정확히 추출되면 링크도 정상적으로 생성됨
     web_link_testcase = f"{ui_base_url}/#/project/{project_id}/workitem?id={test_case_id}"
     web_link_testrun = f"{ui_base_url}/#/project/{project_id}/testrun?id={test_run_id}"
 
@@ -100,12 +103,11 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
     }
 
     try:
-        log(f"Attempting to create Task for {test_case_id}...")
+        log(f"Creating Task for Failed Case: {test_case_id}")
         response = requests.post(create_url, headers=headers, json=payload, verify=False)
         
         if response.status_code == 201:
             resp_json = response.json()
-            # 배열 응답 처리
             if isinstance(resp_json.get('data'), list):
                 new_id = resp_json['data'][0]['id']
             else:
@@ -114,63 +116,54 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
             return new_id
         else:
             error_log(f"[FAIL] Task Create Failed: {response.status_code}")
-            error_log(f"Response: {response.text}")
             return None
     except Exception as e:
         error_log(f"Error creating Task: {e}")
         return None
 
 # -----------------------------------------------------------
-# [CORRECTED] 링크 생성 함수 (POST - Relationships API)
+# [NEW] 링크 생성 함수 (보내주신 API 사용)
 # -----------------------------------------------------------
-def link_workitems(base_url, project_id, token, source_task_id, target_testcase_id, role="resolves"):
+def link_workitems_direct(base_url, token, project_id, source_task_id, target_testcase_id, role="resolves"):
     """
-    POST /projects/{proj}/workitems/{id}/relationships/linkedWorkItems 사용
+    User가 제안한 API 엔드포인트 사용:
+    PATCH /projects/{projectId}/workitems/{workItemId}/linkedworkitems/{roleId}/{targetProjectId}/{linkedWorkItemId}
     """
     
-    # URL 경로용 Short ID (예: TASK-100)
+    # ID에서 Short ID 추출 (Project명 제거)
+    # 예: "MyProject/TASK-100" -> "TASK-100"
     if "/" in source_task_id:
         source_short_id = source_task_id.split("/")[-1]
     else:
         source_short_id = source_task_id
 
-    # Body Payload용 Full ID (예: MyProject/OKSA-1234)
-    # [중요] 타겟 ID에 프로젝트 ID가 없으면 붙여줘야 함
-    if "/" not in target_testcase_id:
-        target_full_id = f"{project_id}/{target_testcase_id}"
+    if "/" in target_testcase_id:
+        target_short_id = target_testcase_id.split("/")[-1]
     else:
-        target_full_id = target_testcase_id
+        target_short_id = target_testcase_id
 
-    # [중요] Relationship 엔드포인트
-    link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}/relationships/linkedWorkItems"
+    # [중요] 제안해주신 URL 구조대로 생성
+    # base_url 끝에 /rest/v1 등이 있다면 적절히 조절 필요. 보통 API Base URL 바로 뒤에 붙음.
+    link_url = (
+        f"{base_url}/projects/{project_id}/workitems/{source_short_id}"
+        f"/linkedworkitems/{role}/{project_id}/{target_short_id}"
+    )
     
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
         "Accept": "application/json"
+        # PATCH지만 Body가 없으므로 Content-Type은 생략 가능하거나 기본값
     }
 
-    # [중요] Relationship POST Payload 구조
-    # data는 반드시 리스트([])여야 합니다.
-    payload = {
-        "data": [
-            {
-                "type": "workitems",
-                "id": target_full_id, # 반드시 Project/ID 형식
-                "meta": {
-                    "role": role      # 연결 역할 (기본: resolves)
-                }
-            }
-        ]
-    }
-    
     try:
-        debug_log(f"Linking (POST): {source_short_id} --[{role}]--> {target_full_id}")
-        response = requests.post(link_url, headers=headers, json=payload, verify=False)
+        debug_log(f"Linking via Direct API: {source_short_id} --[{role}]--> {target_short_id}")
+        debug_log(f"URL: {link_url}")
         
-        # 204 No Content가 성공(추가됨)을 의미함
+        # Body 없이 호출
+        response = requests.patch(link_url, headers=headers, verify=False)
+        
         if response.status_code in [200, 201, 204]:
-            log(f"[OK] Linked successfully.")
+            log(f"[OK] Link Created Successfully!")
         else:
             error_log(f"[FAIL] Link Failed: {response.status_code}")
             print(f"Response: {response.text}")
@@ -190,7 +183,6 @@ def main():
     base_url = os.getenv('BASE_URL', '').strip()
     plan_type = os.getenv('planType', '').strip()
     
-    job_name = os.getenv('JOB_NAME', 'UnknownJob')
     build_number = os.getenv('BUILD_NUMBER', '0')
 
     if not all([token, project_id, test_run_id, base_url]):
@@ -230,23 +222,21 @@ def main():
                 result_status = "failed"
                 comment_text = f"Test Failed (See created Task) - Build #{build_number}"
                 
-                # 1. ID 추출 (정규식 사용)
-                test_case_id = get_test_case_id_from_record(item['id'], project_id, test_run_id)
+                # 1. [강화된 로직] 정확한 Test Case ID 추출
+                test_case_id = get_test_case_id_from_record(item['id'])
                 
                 if not test_case_id:
                     test_case_id = "UNKNOWN"
-                    debug_log(f"Could not extract Test Case ID from {item['id']}")
-                else:
-                    debug_log(f"Extracted Test Case ID: {test_case_id}")
+                    debug_log(f"WARNING: Could not identify Test Case ID pattern in: {item['id']}")
 
                 # 2. Task 생성
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
                 if new_task_id and test_case_id != "UNKNOWN":
-                    # 3. 링크 연결 (POST Relationship)
-                    link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolve")
+                    # 3. [NEW] 사용자 제안 API로 링크 연결
+                    link_workitems_direct(base_url, token, project_id, new_task_id, test_case_id, role="resolve")
 
-                    # 4. Defect 필드 설정
+                    # 4. Test Record 업데이트용 Defect 필드
                     defect_relationship = {
                         "defect": {
                             "data": {
@@ -255,9 +245,6 @@ def main():
                             }
                         }
                     }
-                else:
-                    if not new_task_id:
-                        error_log("[WARNING] Task creation failed.")
 
                 failed_assigned = True
 
