@@ -21,12 +21,15 @@ def log(msg):
 def error_log(msg):
     print(f"{RED}{BOLD}[ERROR] {msg}{RESET}")
 
+def debug_log(msg):
+    print(f"{YELLOW}[DEBUG] {msg}{RESET}")
+
 # -----------------------------------------------------------
-# [NEW] Defect 생성 함수
+# [함수] Task Work Item 생성
 # -----------------------------------------------------------
-def create_defect(base_url, project_id, token, build_number):
+def create_task_workitem(base_url, project_id, token, build_number):
     """
-    Polarion에 새로운 Defect Work Item을 생성하고 ID를 반환합니다.
+    Polarion에 'task' 타입의 Work Item을 생성하고 ID를 반환합니다.
     """
     create_url = f"{base_url}/projects/{project_id}/workitems"
     
@@ -36,46 +39,48 @@ def create_defect(base_url, project_id, token, build_number):
         "Accept": "application/json"
     }
 
-    # Defect 생성 페이로드
+    # [중요] Task 생성을 위한 Payload
+    # 프로젝트 설정에 따라 필수 필드(severity, priority 등)가 다를 수 있습니다.
     payload = {
         "data": {
             "type": "workitems",
             "attributes": {
-                "type": "defect",  # Work Item 타입 (Polarion 설정에 따라 'issue'일 수도 있음)
-                "title": f"[Auto] Test Failed in Jenkins Build #{build_number}",
+                "type": "task",  # 요청하신 대로 'task' 타입으로 설정
+                "title": f"[Auto] Fix Failed Test (Jenkins Build #{build_number})",
                 "description": {
                     "type": "text/html",
-                    "value": f"This defect was automatically created by Jenkins CI/CD.<br>Build Number: {build_number}"
+                    "value": f"Test failed in Jenkins Build #{build_number}.<br>Please investigate."
                 },
-                "severity": "major", # 필수 필드일 경우 설정 필요
-                "status": "open"
+                "status": "open",    # 워크플로우 초기 상태 (설정에 따라 다를 수 있음)
+                "severity": "normal" # 필수 필드일 가능성이 높아 추가
             }
         }
     }
 
     try:
-        log("Creating a new Defect Work Item...")
+        log("Attempting to create a 'task' Work Item...")
         response = requests.post(create_url, headers=headers, json=payload, verify=False)
         
         if response.status_code == 201: # 201 Created
             new_id = response.json()['data']['id']
-            log(f"Defect created successfully: {new_id}")
+            log(f"✅ Task Work Item created successfully: {new_id}")
             return new_id
         else:
-            error_log(f"Failed to create defect. Status: {response.status_code}")
-            print(response.text)
+            # 생성 실패 시 상세 원인 출력
+            error_log(f"❌ Failed to create Task. Status: {response.status_code}")
+            error_log(f"Server Response: {response.text}")
             return None
     except Exception as e:
-        error_log(f"Error creating defect: {e}")
+        error_log(f"Error creating Task: {e}")
         return None
 
 # -----------------------------------------------------------
 # Main Logic
 # -----------------------------------------------------------
 def main():
-    log("Starting Test Records Update with Defect Creation...")
+    log("Starting Test Records Update...")
 
-    # 1. 토큰 및 환경변수 로드
+    # 1. 환경변수 로드
     token = os.getenv('POLARION_TOKEN', '').strip()
     project_id = os.getenv('projectid', '').strip()
     test_run_id = os.getenv('testRunId', '').strip()
@@ -94,7 +99,6 @@ def main():
         error_log("Missing required environment variables.")
         sys.exit(1)
 
-    # 2. 공통 헤더 설정
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -102,29 +106,20 @@ def main():
     }
     
     api_url = f"{base_url}/projects/{project_id}/testruns/{test_run_id}/testrecords"
-    log(f"Target API: {api_url}")
-    log(f"Plan Type detected: '{plan_type}'")
-
+    
     try:
-        # =========================================================
-        # Step 1: GET (기존 Test Record 조회)
-        # =========================================================
+        # Step 1: GET (조회)
         response_get = requests.get(api_url, headers=headers, verify=False)
-        
         if response_get.status_code != 200:
             error_log(f"Failed to fetch records. Status: {response_get.status_code}")
             sys.exit(1)
 
         records_data = response_get.json().get('data', [])
         if not records_data:
-            log("No test records found to update.")
+            log("No test records found.")
             sys.exit(0)
 
-        log(f"Found {len(records_data)} records. Preparing payload...")
-
-        # =========================================================
-        # Step 2: Data Transformation
-        # =========================================================
+        # Step 2: 데이터 가공
         current_time = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
         clean_data = []
         
@@ -134,30 +129,34 @@ def main():
         for item in records_data:
             result_status = "passed"
             comment_text = f"Test Passed from Jenkins (#{build_number})"
-            defect_relationship = None # Defect 연결 정보
+            defect_relationship = None 
 
-            # [Agile 모드일 경우: 첫 번째 건만 Failed + Defect 생성]
+            # [Agile 모드 로직]
             if is_agile_mode and not failed_assigned:
                 result_status = "failed"
-                comment_text = f"Test Failed from Jenkins (#{build_number}) - Defect Created"
+                comment_text = f"Test Failed from Jenkins (#{build_number}) - Task Created"
                 
-                # 1. Defect 생성 호출
-                new_defect_id = create_defect(base_url, project_id, token, build_number)
+                # 1. Task Work Item 생성 시도
+                new_task_id = create_task_workitem(base_url, project_id, token, build_number)
                 
-                # 2. Defect ID가 정상적으로 반환되면 관계(relationship) 데이터 생성
-                if new_defect_id:
+                # 2. 생성 성공 시 관계 설정
+                if new_task_id:
+                    # [주의] Task여도 Test Record의 필드명은 'defect'입니다.
                     defect_relationship = {
                         "defect": {
                             "data": {
-                                "type": "task",
-                                
+                                "type": "workitems",
+                                "id": new_task_id
                             }
                         }
                     }
-                
+                    debug_log(f"Linking Task {new_task_id} to Test Record {item['id']}")
+                else:
+                    error_log("⚠️ Task creation failed, so it will not be linked.")
+
                 failed_assigned = True
 
-            # Payload 구성
+            # Record 객체 구성
             record = {
                 "type": "testrecords",
                 "id": item['id'],
@@ -171,7 +170,7 @@ def main():
                 }
             }
 
-            # Defect가 생성된 경우에만 relationships 필드 추가
+            # 관계 정보가 있으면 추가 (E-Signature 우회를 위해 defect 필드만 추가)
             if defect_relationship:
                 record["relationships"] = defect_relationship
 
@@ -179,10 +178,8 @@ def main():
 
         payload = {"data": clean_data}
 
-        # =========================================================
-        # Step 3: PATCH (업데이트 요청 전송)
-        # =========================================================
-        log("Sending PATCH request to update records...")
+        # Step 3: PATCH (업데이트)
+        log("Sending PATCH request...")
         response_patch = requests.patch(api_url, headers=headers, json=payload, verify=False)
 
         if response_patch.status_code in [200, 204]:
