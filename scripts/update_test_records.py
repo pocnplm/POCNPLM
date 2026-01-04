@@ -149,7 +149,7 @@ def main():
                     defect_relationship = {
                         "defect": {
                             "data": {
-                                "type": "defect",
+                                "type": "task",
                                 
                             }
                         }
