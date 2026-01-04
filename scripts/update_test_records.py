@@ -26,23 +26,36 @@ def debug_log(msg):
     print(f"{YELLOW}[DEBUG] {msg}{RESET}")
 
 # -----------------------------------------------------------
-# [NEW] Test Case ID 추출 함수
+# [NEW] UI Base URL 추출 함수
+# -----------------------------------------------------------
+def get_ui_base_url(api_base_url):
+    """
+    API URL (예: https://domain.com/polarion/rest/v1)에서
+    UI URL (예: https://domain.com/polarion)을 추출합니다.
+    """
+    if "/rest" in api_base_url:
+        return api_base_url.split("/rest")[0]
+    return api_base_url
+
+# -----------------------------------------------------------
+# Test Case ID 추출 함수
 # -----------------------------------------------------------
 def get_test_case_id_from_record(record_id):
     """
-    Record ID 구조: ProjectID/TestRunID/TestCaseID/ExecutionID
-    예: elibrary/MyTestRun/OKSA-1601/0 -> 반환값: OKSA-1601
+    Record ID 구조: ProjectID/TestRunID/TestCaseID/ExecutionID (가변적일 수 있음)
     """
     try:
         parts = record_id.split('/')
+        # 데이터 구조에 따라 인덱스가 다를 수 있으므로 확인 필요
+        # 보통: Project / Run / TestCase / ...
         if len(parts) >= 3:
-            return parts[2] # 3번째 요소가 Test Case ID
+            return parts[2]
     except Exception:
         pass
     return None
 
 # -----------------------------------------------------------
-# [UPDATE] Task 생성 함수 (Description 강화)
+# Task 생성 함수 (HTML Link 수정됨)
 # -----------------------------------------------------------
 def create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id):
     create_url = f"{base_url}/projects/{project_id}/workitems"
@@ -53,14 +66,13 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
         "Accept": "application/json"
     }
 
-    # 1. Description에 들어갈 링크 생성 (Polarion 웹 UI 주소 추정)
-    # 실제 주소 포맷은 Polarion 버전에 따라 다를 수 있으니 확인 필요
-    # 보통: {base_url}/polarion/#/project/{project}/workitem?id={id}
-    # 또는: {base_url}/polarion/redirect/project/{project}/workitem?id={id}
-    
-    # 더 안전한 방법: 단순 텍스트보다 HTML 링크 삽입
-    web_link_testcase = f"{base_url}/polarion/#/project/{project_id}/workitem?id={test_case_id}"
-    web_link_testrun = f"{base_url}/polarion/#/project/{project_id}/testrun?id={test_run_id}"
+    # 1. UI용 Base URL 추출 (rest/v1 제거)
+    ui_base_url = get_ui_base_url(base_url)
+
+    # 2. 정확한 포맷의 하이퍼링크 생성
+    # 요청하신 포맷: {ui_base_url}/#/project/{project_id}/workitem?id={test_case_id}
+    web_link_testcase = f"{ui_base_url}/#/project/{project_id}/workitem?id={test_case_id}"
+    web_link_testrun = f"{ui_base_url}/#/project/{project_id}/testrun?id={test_run_id}"
 
     description_html = (
         f"<b>Test failed in Jenkins Build #{build_number}</b><br><br>"
@@ -108,24 +120,29 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
         return None
 
 # -----------------------------------------------------------
-# [NEW] 링크 생성 함수 (Task -> Test Case)
+# [FIXED] 링크 생성 함수 (POST 방식 사용)
 # -----------------------------------------------------------
-def link_workitems(base_url, project_id, token, source_id, target_id, role="resolves"):
+def link_workitems(base_url, project_id, token, source_task_id, target_testcase_id, role="resolves"):
     """
-    두 Work Item을 연결합니다. (기본 역할: resolves)
-    source_id: 새로 만든 Task (예: Project/TASK-100)
-    target_id: 실패한 Test Case (예: Project/OKSA-1601)
+    Work Item 간의 관계를 생성합니다.
+    방식: POST /projects/{proj}/workitems/{id}/relationships/linkedWorkItems
     """
-    # Polarion API에서 링크를 추가하는 엔드포인트는 보통 POST /workitems/{id}/relationships/linkedWorkItems
-    # 또는 PATCH로 relationships를 업데이트합니다. 가장 확실한 PATCH 방법을 사용합니다.
     
-    # ID 포맷 확인 (Project/ID 형태여야 함)
-    if "/" not in target_id:
-        target_id = f"{project_id}/{target_id}"
-    if "/" not in source_id:
-        source_id = f"{project_id}/{source_id}"
+    # URL 경로에는 순수 ID만 들어가야 함 (ProjectID 제외)
+    # 예: source_task_id가 "MyProj/TASK-100"이라면 "TASK-100"만 추출
+    if "/" in source_task_id:
+        source_short_id = source_task_id.split("/")[-1]
+    else:
+        source_short_id = source_task_id
 
-    link_url = f"{base_url}/projects/{project_id}/workitems/{source_id.split('/')[-1]}"
+    # Body의 ID에는 "ProjectID/ItemID" 형식이 필요함
+    if "/" not in target_testcase_id:
+        target_full_id = f"{project_id}/{target_testcase_id}"
+    else:
+        target_full_id = target_testcase_id
+
+    # 관계 추가 전용 엔드포인트
+    link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}/relationships/linkedWorkItems"
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -133,37 +150,29 @@ def link_workitems(base_url, project_id, token, source_id, target_id, role="reso
         "Accept": "application/json"
     }
 
-    # JSON:API 표준에 따른 링크 추가 Payload
+    # JSON:API 관계 추가 Payload
     payload = {
-        "data": {
-            "type": "workitems",
-            "id": source_id,
-            "relationships": {
-                "linkedWorkItems": {
-                    "data": [
-                        {
-                            "type": "workitems",
-                            "id": target_id,
-                            "meta": {
-                                "role": role
-                            }
-                        }
-                    ]
+        "data": [
+            {
+                "type": "workitems",
+                "id": target_full_id, # 여기는 Project/ID 형식
+                "meta": {
+                    "role": role
                 }
             }
-        }
+        ]
     }
     
     try:
-        debug_log(f"Linking {source_id} --({role})--> {target_id}")
-        # PATCH를 사용하여 기존 정보에 링크 정보를 '병합'하거나 추가
-        response = requests.patch(link_url, headers=headers, json=payload, verify=False)
+        debug_log(f"Linking: Task({source_short_id}) --[{role}]--> TestCase({target_full_id})")
+        # PATCH 대신 POST 사용 (관계 추가)
+        response = requests.post(link_url, headers=headers, json=payload, verify=False)
         
-        if response.status_code in [200, 204]:
+        if response.status_code in [200, 204]: # 204 No Content가 뜨면 성공
             log(f"[OK] Linked successfully.")
         else:
             error_log(f"[FAIL] Link Failed: {response.status_code}")
-            print(response.text)
+            print(f"Response: {response.text}")
             
     except Exception as e:
         error_log(f"Error linking items: {e}")
@@ -222,14 +231,16 @@ def main():
                 
                 # 1. Test Case ID 추출
                 test_case_id = get_test_case_id_from_record(item['id'])
-                
-                # 2. Task 생성 (test_case_id, test_run_id 전달)
+                if not test_case_id:
+                    test_case_id = "UNKNOWN"
+                    debug_log(f"Could not extract Test Case ID from {item['id']}")
+
+                # 2. Task 생성 (링크 생성 로직 개선됨)
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
-                if new_task_id:
-                    # 3. [중요] Task와 Test Case 연결 (Linked Work Items)
-                    if test_case_id:
-                        link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolve")
+                if new_task_id and test_case_id != "UNKNOWN":
+                    # 3. [FIXED] Task와 Test Case 연결 (POST 방식)
+                    link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolves")
 
                     # 4. Test Record와 Task 연결 (defect 필드)
                     defect_relationship = {
@@ -241,7 +252,8 @@ def main():
                         }
                     }
                 else:
-                    error_log("[WARNING] Task creation failed.")
+                    if not new_task_id:
+                        error_log("[WARNING] Task creation failed.")
 
                 failed_assigned = True
 
@@ -265,7 +277,7 @@ def main():
 
         payload = {"data": clean_data}
 
-        log("Sending PATCH request...")
+        log("Sending PATCH request to update Test Records...")
         response_patch = requests.patch(api_url, headers=headers, json=payload, verify=False)
 
         if response_patch.status_code in [200, 204]:
