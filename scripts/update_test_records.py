@@ -4,6 +4,7 @@ import json
 import datetime
 import requests
 import urllib3
+import re  # [NEW] 정규표현식 모듈 추가
 
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -29,45 +30,37 @@ def debug_log(msg):
 # UI Base URL 추출 함수
 # -----------------------------------------------------------
 def get_ui_base_url(api_base_url):
-    """
-    API URL (예: .../polarion/rest/v1) -> UI URL (예: .../polarion)
-    """
     if "/rest" in api_base_url:
         return api_base_url.split("/rest")[0]
     return api_base_url
 
 # -----------------------------------------------------------
-# [FIXED] Test Case ID 추출 로직 개선
+# [FIXED] Test Case ID 추출 로직 (정규표현식 사용)
 # -----------------------------------------------------------
-def get_test_case_id_from_record(record_id, project_id):
+def get_test_case_id_from_record(record_id, project_id, test_run_id):
     """
-    Record ID 문자열을 분석하여 실제 Test Case ID를 추출합니다.
-    기존: 무조건 3번째 요소(parts[2])를 가져와서 Project ID가 걸리는 문제 발생
-    개선: Project ID 위치를 찾고 그 다음 요소를 가져오거나, Work Item ID 형식(하이픈 포함)을 찾음
+    Record ID 예시: Project/TestRun/TestCase/ExecutionID
+    'testest' 같은 TestRunID를 피하고, 'OKSA-1234' 같은 패턴을 찾습니다.
     """
     try:
         parts = record_id.split('/')
         
-        # 1. Project ID가 경로 안에 명시적으로 있다면, 그 다음 요소가 Test Case ID일 확률이 매우 높음
-        if project_id in parts:
-            p_index = parts.index(project_id)
-            if p_index + 1 < len(parts):
-                candidate = parts[p_index + 1]
-                # 반복 횟수(0, 1) 같은 숫자가 아니면 리턴
-                if not candidate.isdigit():
-                    return candidate
+        # 1. Project ID와 Test Run ID는 제외 대상
+        filtered_parts = [p for p in parts if p != project_id and p != test_run_id]
 
-        # 2. Project ID를 못 찾았다면, 역순으로 탐색하여 하이픈(-)이 있는 요소를 찾음 (예: OKSA-1234)
-        # 보통 마지막은 실행횟수(0), 그 앞이 ID
-        for part in reversed(parts):
-            if '-' in part and not part.startswith('Link'): # 간단한 Work Item ID 패턴 체크
+        # 2. 정규표현식으로 '문자-숫자' 패턴 (예: OKSA-1703) 찾기
+        # 보통 Polarion ID는 대문자와 숫자의 조합 + 하이픈
+        id_pattern = re.compile(r'^[A-Za-z]+-\d+$')
+
+        for part in filtered_parts:
+            # 패턴이 일치하면 바로 반환
+            if id_pattern.match(part):
                 return part
-
-        # 3. Fallback: 기존보다 한 칸 뒤(parts[3])를 시도 (구조가 Group/Run/Project/Case 인 경우 대비)
-        if len(parts) >= 4:
-            return parts[3]
-        if len(parts) >= 3:
-            return parts[2]
+        
+        # 3. 패턴 매칭 실패 시, 남은 것 중 숫자가 아니고 'Link'가 아닌 것 선택
+        for part in filtered_parts:
+            if not part.isdigit() and not part.startswith('Link'):
+                return part
             
     except Exception as e:
         debug_log(f"Error parsing ID: {e}")
@@ -87,7 +80,7 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
 
     ui_base_url = get_ui_base_url(base_url)
 
-    # 링크 생성 (여기서 test_case_id가 올바르면 링크도 정상 작동함)
+    # HTML 링크 생성
     web_link_testcase = f"{ui_base_url}/#/project/{project_id}/workitem?id={test_case_id}"
     web_link_testrun = f"{ui_base_url}/#/project/{project_id}/testrun?id={test_run_id}"
 
@@ -137,21 +130,28 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
         return None
 
 # -----------------------------------------------------------
-# 링크 생성 함수 (POST)
+# [FIXED] 링크 생성 함수 (PATCH 사용)
 # -----------------------------------------------------------
-def link_workitems(base_url, project_id, token, source_task_id, target_testcase_id, role="resolve"):
+def link_workitems(base_url, project_id, token, source_task_id, target_testcase_id, role="resolves"):
+    """
+    Work Item 간의 관계를 생성합니다.
+    방식 변경: POST /relationships/... (실패) -> PATCH /workitems/{id} (성공 권장)
+    새로 만든 Task이므로 기존 링크를 덮어써도 안전합니다.
+    """
+    
     if "/" in source_task_id:
         source_short_id = source_task_id.split("/")[-1]
     else:
         source_short_id = source_task_id
 
-    # Target ID는 Full ID (Project/ID)가 안전함
+    # Target ID는 Full ID (Project/ID)가 필요
     if "/" not in target_testcase_id:
         target_full_id = f"{project_id}/{target_testcase_id}"
     else:
         target_full_id = target_testcase_id
 
-    link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}/relationships/linkedWorkItems"
+    # URL: Work Item 자체를 수정하는 주소
+    link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}"
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -159,21 +159,30 @@ def link_workitems(base_url, project_id, token, source_task_id, target_testcase_
         "Accept": "application/json"
     }
 
+    # PATCH Payload: relationships 필드 자체를 업데이트
     payload = {
-        "data": [
-            {
-                "type": "workitems",
-                "id": target_full_id,
-                "meta": {
-                    "role": role
+        "data": {
+            "type": "workitems",
+            "id": f"{project_id}/{source_short_id}",
+            "relationships": {
+                "linkedWorkItems": {
+                    "data": [
+                        {
+                            "type": "workitems",
+                            "id": target_full_id,
+                            "meta": {
+                                "role": role
+                            }
+                        }
+                    ]
                 }
             }
-        ]
+        }
     }
     
     try:
-        debug_log(f"Linking: Task({source_short_id}) --[{role}]--> TestCase({target_full_id})")
-        response = requests.post(link_url, headers=headers, json=payload, verify=False)
+        debug_log(f"Linking (PATCH): Task({source_short_id}) --[{role}]--> TestCase({target_full_id})")
+        response = requests.patch(link_url, headers=headers, json=payload, verify=False)
         
         if response.status_code in [200, 204]:
             log(f"[OK] Linked successfully.")
@@ -236,20 +245,19 @@ def main():
                 result_status = "failed"
                 comment_text = f"Test Failed (See created Task) - Build #{build_number}"
                 
-                # 1. [UPDATED] Test Case ID 추출 시 project_id를 전달하여 제외시킴
-                test_case_id = get_test_case_id_from_record(item['id'], project_id)
+                # 1. [UPDATED] Test Run ID까지 전달하여 제외시킴
+                test_case_id = get_test_case_id_from_record(item['id'], project_id, test_run_id)
                 
-                if not test_case_id or test_case_id == project_id:
-                    # 만약 여전히 Project ID와 같다면 한번 더 fallback 시도
-                    debug_log(f"ID extraction warning: Got {test_case_id}, trying fallback...")
+                if not test_case_id:
                     test_case_id = "UNKNOWN"
+                    debug_log(f"Could not extract Test Case ID from {item['id']}")
 
                 # 2. Task 생성
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
                 if new_task_id and test_case_id != "UNKNOWN":
-                    # 3. 링크 연결
-                    link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolves")
+                    # 3. [FIXED] 링크 연결 (PATCH 방식)
+                    link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolve")
 
                     # 4. Defect 필드 추가
                     defect_relationship = {
