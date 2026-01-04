@@ -67,7 +67,7 @@ def create_task_workitem(base_url, project_id, token, build_number):
             return new_id
         else:
             # 생성 실패 시 상세 원인 출력
-            error_log(f"❌ Failed to create Task. Status: {response.status_code}")
+            error_log(f"Failed to create Task. Status: {response.status_code}")
             error_log(f"Server Response: {response.text}")
             return None
     except Exception as e:
@@ -152,7 +152,7 @@ def main():
                     }
                     debug_log(f"Linking Task {new_task_id} to Test Record {item['id']}")
                 else:
-                    error_log("⚠️ Task creation failed, so it will not be linked.")
+                    error_log("Task creation failed, so it will not be linked.")
 
                 failed_assigned = True
 
