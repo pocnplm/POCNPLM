@@ -7,8 +7,6 @@ import urllib3
 
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# 윈도우 Jenkins 환경 인코딩 설정
 sys.stdout.reconfigure(encoding='utf-8')
 
 # 로그용 색상 코드
@@ -28,12 +26,25 @@ def debug_log(msg):
     print(f"{YELLOW}[DEBUG] {msg}{RESET}")
 
 # -----------------------------------------------------------
-# [함수] Task Work Item 생성
+# [NEW] Test Case ID 추출 함수
 # -----------------------------------------------------------
-def create_task_workitem(base_url, project_id, token, build_number):
+def get_test_case_id_from_record(record_id):
     """
-    Polarion에 'task' 타입의 Work Item을 생성하고 ID를 반환합니다.
+    Record ID 구조: ProjectID/TestRunID/TestCaseID/ExecutionID
+    예: elibrary/MyTestRun/OKSA-1601/0 -> 반환값: OKSA-1601
     """
+    try:
+        parts = record_id.split('/')
+        if len(parts) >= 3:
+            return parts[2] # 3번째 요소가 Test Case ID
+    except Exception:
+        pass
+    return None
+
+# -----------------------------------------------------------
+# [UPDATE] Task 생성 함수 (Description 강화)
+# -----------------------------------------------------------
+def create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id):
     create_url = f"{base_url}/projects/{project_id}/workitems"
     
     headers = {
@@ -42,18 +53,32 @@ def create_task_workitem(base_url, project_id, token, build_number):
         "Accept": "application/json"
     }
 
-    # [수정 1] Data를 배열([])로 감쌌습니다.
-    # BEGIN_ARRAY expected 에러 해결을 위한 조치
+    # 1. Description에 들어갈 링크 생성 (Polarion 웹 UI 주소 추정)
+    # 실제 주소 포맷은 Polarion 버전에 따라 다를 수 있으니 확인 필요
+    # 보통: {base_url}/polarion/#/project/{project}/workitem?id={id}
+    # 또는: {base_url}/polarion/redirect/project/{project}/workitem?id={id}
+    
+    # 더 안전한 방법: 단순 텍스트보다 HTML 링크 삽입
+    web_link_testcase = f"{base_url}/polarion/#/project/{project_id}/workitem?id={test_case_id}"
+    web_link_testrun = f"{base_url}/polarion/#/project/{project_id}/testrun?id={test_run_id}"
+
+    description_html = (
+        f"<b>Test failed in Jenkins Build #{build_number}</b><br><br>"
+        f"<b>Test Run:</b> <a href='{web_link_testrun}' target='_blank'>{test_run_id}</a><br>"
+        f"<b>Test Case:</b> <a href='{web_link_testcase}' target='_blank'>{test_case_id}</a><br><br>"
+        f"Please investigate the failure."
+    )
+
     payload = {
         "data": [
             {
                 "type": "workitems",
                 "attributes": {
                     "type": "task",
-                    "title": f"[Auto] Fix Failed Test (Jenkins Build #{build_number})",
+                    "title": f"[Auto] Fix Failed Test: {test_case_id} (Build #{build_number})",
                     "description": {
                         "type": "text/html",
-                        "value": f"Test failed in Jenkins Build #{build_number}.<br>Please investigate."
+                        "value": description_html
                     },
                     "status": "open",
                     "severity": "normal"
@@ -63,29 +88,85 @@ def create_task_workitem(base_url, project_id, token, build_number):
     }
 
     try:
-        log("Attempting to create a 'task' Work Item...")
+        log(f"Attempting to create Task for {test_case_id}...")
         response = requests.post(create_url, headers=headers, json=payload, verify=False)
         
-        # 201 Created (성공)
         if response.status_code == 201:
             resp_json = response.json()
-            
-            # [수정 2] 요청을 배열로 보냈으므로 응답도 배열로 옵니다. 첫 번째 요소([0])를 선택합니다.
             if isinstance(resp_json.get('data'), list):
                 new_id = resp_json['data'][0]['id']
             else:
-                # 만약 서버가 배열로 요청받고 객체로 돌려주는 경우를 대비
                 new_id = resp_json['data']['id']
-
-            log(f"[OK] Task Work Item created successfully: {new_id}")
+            log(f"[OK] Task Created: {new_id}")
             return new_id
         else:
-            error_log(f"[FAIL] Failed to create Task. Status: {response.status_code}")
-            error_log(f"Server Response: {response.text}")
+            error_log(f"[FAIL] Task Create Failed: {response.status_code}")
+            error_log(f"Response: {response.text}")
             return None
     except Exception as e:
         error_log(f"Error creating Task: {e}")
         return None
+
+# -----------------------------------------------------------
+# [NEW] 링크 생성 함수 (Task -> Test Case)
+# -----------------------------------------------------------
+def link_workitems(base_url, project_id, token, source_id, target_id, role="resolves"):
+    """
+    두 Work Item을 연결합니다. (기본 역할: resolves)
+    source_id: 새로 만든 Task (예: Project/TASK-100)
+    target_id: 실패한 Test Case (예: Project/OKSA-1601)
+    """
+    # Polarion API에서 링크를 추가하는 엔드포인트는 보통 POST /workitems/{id}/relationships/linkedWorkItems
+    # 또는 PATCH로 relationships를 업데이트합니다. 가장 확실한 PATCH 방법을 사용합니다.
+    
+    # ID 포맷 확인 (Project/ID 형태여야 함)
+    if "/" not in target_id:
+        target_id = f"{project_id}/{target_id}"
+    if "/" not in source_id:
+        source_id = f"{project_id}/{source_id}"
+
+    link_url = f"{base_url}/projects/{project_id}/workitems/{source_id.split('/')[-1]}"
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    # JSON:API 표준에 따른 링크 추가 Payload
+    payload = {
+        "data": {
+            "type": "workitems",
+            "id": source_id,
+            "relationships": {
+                "linkedWorkItems": {
+                    "data": [
+                        {
+                            "type": "workitems",
+                            "id": target_id,
+                            "meta": {
+                                "role": role
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    
+    try:
+        debug_log(f"Linking {source_id} --({role})--> {target_id}")
+        # PATCH를 사용하여 기존 정보에 링크 정보를 '병합'하거나 추가
+        response = requests.patch(link_url, headers=headers, json=payload, verify=False)
+        
+        if response.status_code in [200, 204]:
+            log(f"[OK] Linked successfully.")
+        else:
+            error_log(f"[FAIL] Link Failed: {response.status_code}")
+            print(response.text)
+            
+    except Exception as e:
+        error_log(f"Error linking items: {e}")
 
 # -----------------------------------------------------------
 # Main Logic
@@ -93,7 +174,6 @@ def create_task_workitem(base_url, project_id, token, build_number):
 def main():
     log("Starting Test Records Update...")
 
-    # 1. 환경변수 로드
     token = os.getenv('POLARION_TOKEN', '').strip()
     project_id = os.getenv('projectid', '').strip()
     test_run_id = os.getenv('testRunId', '').strip()
@@ -103,12 +183,8 @@ def main():
     job_name = os.getenv('JOB_NAME', 'UnknownJob')
     build_number = os.getenv('BUILD_NUMBER', '0')
 
-    if not token:
-        error_log("CRITICAL: Token is EMPTY!")
-        sys.exit(1)
-
-    if not all([project_id, test_run_id, base_url]):
-        error_log("Missing required environment variables.")
+    if not all([token, project_id, test_run_id, base_url]):
+        error_log("Missing required env vars.")
         sys.exit(1)
 
     headers = {
@@ -120,21 +196,17 @@ def main():
     api_url = f"{base_url}/projects/{project_id}/testruns/{test_run_id}/testrecords"
     
     try:
-        # Step 1: GET (조회)
         response_get = requests.get(api_url, headers=headers, verify=False)
         if response_get.status_code != 200:
-            error_log(f"Failed to fetch records. Status: {response_get.status_code}")
+            error_log(f"Fetch failed: {response_get.status_code}")
             sys.exit(1)
 
         records_data = response_get.json().get('data', [])
         if not records_data:
-            log("No test records found.")
+            log("No records found.")
             sys.exit(0)
 
-        # Step 2: 데이터 가공
-        # [수정 3] Datetime 경고 해결 (timezone-aware 사용)
         current_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        
         clean_data = []
         is_agile_mode = (plan_type == "Agile")
         failed_assigned = False 
@@ -146,12 +218,20 @@ def main():
 
             if is_agile_mode and not failed_assigned:
                 result_status = "failed"
-                comment_text = f"Test Failed from Jenkins (#{build_number}) - Task Created"
+                comment_text = f"Test Failed (See created Task) - Build #{build_number}"
                 
-                # Task 생성 호출
-                new_task_id = create_task_workitem(base_url, project_id, token, build_number)
+                # 1. Test Case ID 추출
+                test_case_id = get_test_case_id_from_record(item['id'])
+                
+                # 2. Task 생성 (test_case_id, test_run_id 전달)
+                new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
                 if new_task_id:
+                    # 3. [중요] Task와 Test Case 연결 (Linked Work Items)
+                    if test_case_id:
+                        link_workitems(base_url, project_id, token, new_task_id, test_case_id, role="resolve")
+
+                    # 4. Test Record와 Task 연결 (defect 필드)
                     defect_relationship = {
                         "defect": {
                             "data": {
@@ -160,9 +240,8 @@ def main():
                             }
                         }
                     }
-                    debug_log(f"Linking Task {new_task_id} to Test Record {item['id']}")
                 else:
-                    error_log("[WARNING] Task creation failed, so it will not be linked.")
+                    error_log("[WARNING] Task creation failed.")
 
                 failed_assigned = True
 
@@ -186,7 +265,6 @@ def main():
 
         payload = {"data": clean_data}
 
-        # Step 3: PATCH (업데이트)
         log("Sending PATCH request...")
         response_patch = requests.patch(api_url, headers=headers, json=payload, verify=False)
 
@@ -194,7 +272,7 @@ def main():
             log(f"[SUCCESS] Update Complete! Status: {response_patch.status_code}")
         else:
             error_log(f"Update Failed. Status: {response_patch.status_code}")
-            print(f"Server Message: {response_patch.text}")
+            print(response_patch.text)
             sys.exit(1)
 
     except Exception as e:
