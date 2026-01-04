@@ -149,8 +149,8 @@ def main():
                     defect_relationship = {
                         "defect": {
                             "data": {
-                                "type": "workitems",
-                                "id": new_defect_id
+                                "type": "defect",
+                                
                             }
                         }
                     }
