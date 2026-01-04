@@ -8,6 +8,9 @@ import urllib3
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# 윈도우 Jenkins 환경 인코딩 설정
+sys.stdout.reconfigure(encoding='utf-8')
+
 # 로그용 색상 코드
 GREEN = '\033[92m'
 RESET = '\033[0m'
@@ -39,35 +42,45 @@ def create_task_workitem(base_url, project_id, token, build_number):
         "Accept": "application/json"
     }
 
-    # [중요] Task 생성을 위한 Payload
-    # 프로젝트 설정에 따라 필수 필드(severity, priority 등)가 다를 수 있습니다.
+    # [수정 1] Data를 배열([])로 감쌌습니다.
+    # BEGIN_ARRAY expected 에러 해결을 위한 조치
     payload = {
-        "data": {
-            "type": "workitems",
-            "attributes": {
-                "type": "task",  # 요청하신 대로 'task' 타입으로 설정
-                "title": f"[Auto] Fix Failed Test (Jenkins Build #{build_number})",
-                "description": {
-                    "type": "text/html",
-                    "value": f"Test failed in Jenkins Build #{build_number}.<br>Please investigate."
-                },
-                "status": "open",    # 워크플로우 초기 상태 (설정에 따라 다를 수 있음)
-                "severity": "normal" # 필수 필드일 가능성이 높아 추가
+        "data": [
+            {
+                "type": "workitems",
+                "attributes": {
+                    "type": "task",
+                    "title": f"[Auto] Fix Failed Test (Jenkins Build #{build_number})",
+                    "description": {
+                        "type": "text/html",
+                        "value": f"Test failed in Jenkins Build #{build_number}.<br>Please investigate."
+                    },
+                    "status": "open",
+                    "severity": "normal"
+                }
             }
-        }
+        ]
     }
 
     try:
         log("Attempting to create a 'task' Work Item...")
         response = requests.post(create_url, headers=headers, json=payload, verify=False)
         
-        if response.status_code == 201: # 201 Created
-            new_id = response.json()['data']['id']
-            log(f"✅ Task Work Item created successfully: {new_id}")
+        # 201 Created (성공)
+        if response.status_code == 201:
+            resp_json = response.json()
+            
+            # [수정 2] 요청을 배열로 보냈으므로 응답도 배열로 옵니다. 첫 번째 요소([0])를 선택합니다.
+            if isinstance(resp_json.get('data'), list):
+                new_id = resp_json['data'][0]['id']
+            else:
+                # 만약 서버가 배열로 요청받고 객체로 돌려주는 경우를 대비
+                new_id = resp_json['data']['id']
+
+            log(f"[OK] Task Work Item created successfully: {new_id}")
             return new_id
         else:
-            # 생성 실패 시 상세 원인 출력
-            error_log(f"Failed to create Task. Status: {response.status_code}")
+            error_log(f"[FAIL] Failed to create Task. Status: {response.status_code}")
             error_log(f"Server Response: {response.text}")
             return None
     except Exception as e:
@@ -90,7 +103,6 @@ def main():
     job_name = os.getenv('JOB_NAME', 'UnknownJob')
     build_number = os.getenv('BUILD_NUMBER', '0')
 
-    # 필수 값 체크
     if not token:
         error_log("CRITICAL: Token is EMPTY!")
         sys.exit(1)
@@ -120,9 +132,10 @@ def main():
             sys.exit(0)
 
         # Step 2: 데이터 가공
-        current_time = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-        clean_data = []
+        # [수정 3] Datetime 경고 해결 (timezone-aware 사용)
+        current_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         
+        clean_data = []
         is_agile_mode = (plan_type == "Agile")
         failed_assigned = False 
 
@@ -131,17 +144,14 @@ def main():
             comment_text = f"Test Passed from Jenkins (#{build_number})"
             defect_relationship = None 
 
-            # [Agile 모드 로직]
             if is_agile_mode and not failed_assigned:
                 result_status = "failed"
                 comment_text = f"Test Failed from Jenkins (#{build_number}) - Task Created"
                 
-                # 1. Task Work Item 생성 시도
+                # Task 생성 호출
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number)
                 
-                # 2. 생성 성공 시 관계 설정
                 if new_task_id:
-                    # [주의] Task여도 Test Record의 필드명은 'defect'입니다.
                     defect_relationship = {
                         "defect": {
                             "data": {
@@ -152,11 +162,10 @@ def main():
                     }
                     debug_log(f"Linking Task {new_task_id} to Test Record {item['id']}")
                 else:
-                    error_log("Task creation failed, so it will not be linked.")
+                    error_log("[WARNING] Task creation failed, so it will not be linked.")
 
                 failed_assigned = True
 
-            # Record 객체 구성
             record = {
                 "type": "testrecords",
                 "id": item['id'],
@@ -170,7 +179,6 @@ def main():
                 }
             }
 
-            # 관계 정보가 있으면 추가 (E-Signature 우회를 위해 defect 필드만 추가)
             if defect_relationship:
                 record["relationships"] = defect_relationship
 
