@@ -8,7 +8,6 @@ import re
 
 # SSL 인증서 경고 끄기
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# 윈도우 인코딩 문제 방지
 sys.stdout.reconfigure(encoding='utf-8')
 
 # 로그용 색상 코드
@@ -17,6 +16,7 @@ RESET = '\033[0m'
 BOLD = '\033[1m'
 RED = '\033[91m'
 YELLOW = '\033[93m'
+CYAN = '\033[96m' # 디버깅용 색상 추가
 
 def log(msg):
     print(f"{GREEN}{BOLD}[UPDATE-RECORDS] {msg}{RESET}")
@@ -27,6 +27,10 @@ def error_log(msg):
 def debug_log(msg):
     print(f"{YELLOW}[DEBUG] {msg}{RESET}")
 
+def trace_log(msg):
+    """실행 흐름 추적용 로그"""
+    print(f"{CYAN}[TRACE] {msg}{RESET}")
+
 # -----------------------------------------------------------
 # UI Base URL 추출 함수
 # -----------------------------------------------------------
@@ -36,21 +40,15 @@ def get_ui_base_url(api_base_url):
     return api_base_url
 
 # -----------------------------------------------------------
-# Test Case ID 추출 로직 (정규표현식)
+# Test Case ID 추출 로직
 # -----------------------------------------------------------
 def get_test_case_id_from_record(record_id):
-    """
-    Record ID에서 'OKSA-1234' 같은 패턴만 추출
-    """
     try:
         parts = record_id.split('/')
-        # 정규식: 문자-숫자 패턴 (예: OKSA-1703)
         id_pattern = re.compile(r'^[A-Za-z]+-\d+$')
-
         for part in parts:
             if id_pattern.match(part):
                 return part
-        
         debug_log(f"Cannot find pattern 'ID-Number' in {parts}")
     except Exception as e:
         debug_log(f"Error parsing ID: {e}")
@@ -117,28 +115,19 @@ def create_task_workitem(base_url, project_id, token, build_number, test_run_id,
         return None
 
 # -----------------------------------------------------------
-# [완전 수정됨] 링크 생성 함수 (CURL 명령어 기반)
+# 링크 생성 함수
 # -----------------------------------------------------------
 def link_workitems(base_url, token, project_id, source_task_id, target_testcase_id, role="resolve"):
-    """
-    제공해주신 CURL 명령어 구조를 그대로 구현:
-    POST /projects/{proj}/workitems/{sourceID}/linkedworkitems
-    Payload: type="linkedworkitems", attributes={role=...}, relationships={workItem={data={id=TargetFullID}}}
-    """
-    
-    # 1. Source ID: Short ID 사용 (URL용) - 예: "TASK-100"
     if "/" in source_task_id:
         source_short_id = source_task_id.split("/")[-1]
     else:
         source_short_id = source_task_id
 
-    # 2. Target ID: Full ID 사용 (Body용) - 예: "Project/OKSA-1234"
     if "/" not in target_testcase_id:
         target_full_id = f"{project_id}/{target_testcase_id}"
     else:
         target_full_id = target_testcase_id
 
-    # 3. URL 구성
     link_url = f"{base_url}/projects/{project_id}/workitems/{source_short_id}/linkedworkitems"
     
     headers = {
@@ -147,20 +136,19 @@ def link_workitems(base_url, token, project_id, source_task_id, target_testcase_
         "Accept": "application/json"
     }
 
-    # 4. Payload 구성 (CURL 명령어 구조 준수)
     payload = {
         "data": [
             {
                 "type": "linkedworkitems",
                 "attributes": {
-                    "role": role,         # 변수 사용 (기본값: resolve)
+                    "role": role,
                     "suspect": False
                 },
                 "relationships": {
-                    "workItem": {         # 연결할 대상 (Target)
+                    "workItem": {
                         "data": {
                             "type": "workitems",
-                            "id": target_full_id   # Project/ID 형식
+                            "id": target_full_id
                         }
                     }
                 }
@@ -170,8 +158,6 @@ def link_workitems(base_url, token, project_id, source_task_id, target_testcase_
 
     try:
         debug_log(f"Linking: {source_short_id} --[{role}]--> {target_full_id}")
-        
-        # POST 요청 전송
         response = requests.post(link_url, headers=headers, json=payload, verify=False)
         
         if response.status_code in [200, 201, 204]:
@@ -184,17 +170,26 @@ def link_workitems(base_url, token, project_id, source_task_id, target_testcase_
         error_log(f"Error linking items: {e}")
 
 # -----------------------------------------------------------
-# Main Logic
+# Main Logic (Debug Enhanced)
 # -----------------------------------------------------------
 def main():
     log("Starting Test Records Update...")
 
+    # 환경변수 로드
     token = os.getenv('POLARION_TOKEN', '').strip()
     project_id = os.getenv('projectid', '').strip()
     test_run_id = os.getenv('testRunId', '').strip()
     base_url = os.getenv('BASE_URL', '').strip()
-    plan_type = os.getenv('planType', '').strip()
     
+    # -----------------------------------------------------------
+    # [DEBUG POINT 1] Plan Type 변수 검증
+    # -----------------------------------------------------------
+    raw_plan_type = os.getenv('planType') # strip() 하지 않은 원본 값
+    plan_type = str(raw_plan_type).strip() if raw_plan_type else ""
+    
+    trace_log(f"Environment Variable 'planType' Raw Value: '{raw_plan_type}'")
+    trace_log(f"Processed 'planType' Value: '{plan_type}'")
+
     build_number = os.getenv('BUILD_NUMBER', '0')
 
     if not all([token, project_id, test_run_id, base_url]):
@@ -210,7 +205,6 @@ def main():
     api_url = f"{base_url}/projects/{project_id}/testruns/{test_run_id}/testrecords"
     
     try:
-        # 1. 기존 Test Record 조회
         response_get = requests.get(api_url, headers=headers, verify=False)
         if response_get.status_code != 200:
             error_log(f"Fetch failed: {response_get.status_code}")
@@ -223,34 +217,48 @@ def main():
 
         current_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         clean_data = []
+
+        # -----------------------------------------------------------
+        # [DEBUG POINT 2] Agile 모드 판단 로직 검증
+        # -----------------------------------------------------------
+        # 대소문자 무시 비교 (.lower())를 추가하여 실수 방지 권장
+        # 하지만 일단 사용자가 설정한 값과 정확히 비교되는지 확인
         is_agile_mode = (plan_type == "Agile")
+        
+        trace_log(f"Check Condition: '{plan_type}' == 'Agile' ? -> {is_agile_mode}")
+        
+        if is_agile_mode:
+            log(">>> Running in AGILE Mode (Fail Injection Active)")
+        else:
+            log(">>> Running in STANDARD Mode (All Passed)")
+
         failed_assigned = False 
 
-        for item in records_data:
+        for index, item in enumerate(records_data):
+            # 루프 내 상태 추적
+            debug_log(f"[{index+1}/{len(records_data)}] Processing Record: {item['id']}")
+
             result_status = "passed"
             comment_text = f"Test Passed from Jenkins (#{build_number})"
             defect_relationship = None 
 
+            # Agile 모드이고 아직 Failed를 할당하지 않았으면
             if is_agile_mode and not failed_assigned:
+                trace_log("   -> [Agile Logic Triggered] Marking this test as FAILED.")
+                
                 result_status = "failed"
                 comment_text = f"Test Failed (See created Task) - Build #{build_number}"
                 
-                # Test Case ID 추출
                 test_case_id = get_test_case_id_from_record(item['id'])
-                
                 if not test_case_id:
                     test_case_id = "UNKNOWN"
-                    debug_log(f"WARNING: Could not identify Test Case ID pattern in: {item['id']}")
+                    debug_log(f"   -> WARNING: Could not identify Test Case ID")
 
-                # Task Work Item 생성
                 new_task_id = create_task_workitem(base_url, project_id, token, build_number, test_run_id, test_case_id)
                 
                 if new_task_id and test_case_id != "UNKNOWN":
-                    # [핵심 변경] CURL 명령어로 확인된 API를 사용하여 링크 생성
-                    # role="resolve" (CURL 명령어 기준)
                     link_workitems(base_url, token, project_id, new_task_id, test_case_id, role="resolve")
-
-                    # Test Record에도 Defect 연결 정보 추가
+                    
                     defect_relationship = {
                         "defect": {
                             "data": {
@@ -261,6 +269,11 @@ def main():
                     }
 
                 failed_assigned = True
+            else:
+                if is_agile_mode:
+                    trace_log("   -> [Agile Logic Skipped] Already assigned failure or subsequent item.")
+                else:
+                    trace_log("   -> [Standard Logic] Marking as PASSED.")
 
             record = {
                 "type": "testrecords",
